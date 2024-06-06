@@ -2,10 +2,12 @@ package auction_usecase
 
 import (
 	"context"
+	"fullcycle-auction_go/configuration/logger"
 	"fullcycle-auction_go/internal/entity/auction_entity"
 	"fullcycle-auction_go/internal/entity/bid_entity"
 	"fullcycle-auction_go/internal/internal_error"
 	"fullcycle-auction_go/internal/usecase/bid_usecase"
+	"os"
 	"time"
 )
 
@@ -34,9 +36,13 @@ type WinningInfoOutputDTO struct {
 func NewAuctionUseCase(
 	auctionRepositoryInterface auction_entity.AuctionRepositoryInterface,
 	bidRepositoryInterface bid_entity.BidEntityRepository) AuctionUseCaseInterface {
+	auctionInterval := getAuctionInterval()
+
 	return &AuctionUseCase{
 		auctionRepositoryInterface: auctionRepositoryInterface,
 		bidRepositoryInterface:     bidRepositoryInterface,
+		timer:                      time.NewTimer(auctionInterval),
+		interval:                   auctionInterval,
 	}
 }
 
@@ -64,6 +70,18 @@ type AuctionStatus int64
 type AuctionUseCase struct {
 	auctionRepositoryInterface auction_entity.AuctionRepositoryInterface
 	bidRepositoryInterface     bid_entity.BidEntityRepository
+
+	timer    *time.Timer
+	interval time.Duration
+}
+
+func getAuctionInterval() time.Duration {
+	auctionInterval := os.Getenv("AUCTION_INTERVAL")
+	duration, err := time.ParseDuration(auctionInterval)
+	if err != nil {
+		return 60 * time.Second
+	}
+	return duration
 }
 
 func (au *AuctionUseCase) CreateAuction(
@@ -83,5 +101,25 @@ func (au *AuctionUseCase) CreateAuction(
 		return err
 	}
 
+	au.startAuctionRoutine(ctx, auction)
+
 	return nil
+}
+
+func (au *AuctionUseCase) startAuctionRoutine(ctx context.Context, auction *auction_entity.Auction) {
+	go func() {
+		for {
+			select {
+			case <-au.timer.C:
+				if auction.IsActive() {
+					auction.Finish()
+					err := au.auctionRepositoryInterface.UpdateAuctionStatus(ctx, auction)
+					if err != nil {
+						logger.Error("error trying to finish auction", err)
+					}
+					au.timer.Reset(au.interval)
+				}
+			}
+		}
+	}()
 }
